@@ -1,0 +1,64 @@
+name: Build iOS
+
+# Chạy tay: tab Actions -> "Build iOS" -> Run workflow. Cũng tự chạy mỗi khi push lên main/master.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nếu repo chỉ chứa file .zip thì giải nén ra trước, rồi tìm thư mục chứa project.yml.
+      - name: Tìm thư mục dự án
+        run: |
+          for z in *.zip; do
+            if [ -f "$z" ]; then unzip -q -o "$z"; fi
+          done
+          f=$(find . -name project.yml -not -path '*/node_modules/*' | head -1)
+          echo "DIR=$(dirname "$f")" >> "$GITHUB_ENV"
+
+      - name: Cài XcodeGen
+        run: brew install xcodegen
+
+      - name: Tạo project Xcode
+        working-directory: ${{ env.DIR }}
+        run: xcodegen generate
+
+      - name: Build (không ký)
+        working-directory: ${{ env.DIR }}
+        run: |
+          set -o pipefail
+          xcodebuild -project Bangcong.xcodeproj -scheme Bangcong \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build.log
+
+      - name: In các dòng lỗi (nếu có)
+        if: failure()
+        working-directory: ${{ env.DIR }}
+        run: grep -E "error:" build.log | head -50 || true
+
+      - name: Đóng gói IPA
+        working-directory: ${{ env.DIR }}
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/Bangcong.app Payload/
+          zip -qry Bangcong.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bangcong-ipa
+          path: ${{ env.DIR }}/Bangcong.ipa
+
+      - name: Gửi log build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.DIR }}/build.log
+          if-no-files-found: ignore
